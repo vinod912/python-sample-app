@@ -6,7 +6,7 @@ pipeline {
     }
     
     environment {
-        // BYPASS MTU/TLS HANDSHAKE ISSUES
+        // Force Git to ignore the handshake packet size issues
         GIT_SSL_NO_VERIFY = 'true'
     }
     
@@ -17,13 +17,12 @@ pipeline {
     }
     
     stages {
-        stage('Network Setup') {
+        stage('Initialize Workspace') {
             steps {
-                // This forces Git to use a massive buffer and skip SSL
-                // which prevents the "GnuTLS handshake" crash.
+                // Set these globally in the pod to assist the checkout
                 sh '''
                     git config --global http.sslVerify false
-                    git config --global http.postBuffer 524288000
+                    git config --global http.postBuffer 1048576000
                 '''
             }
         }
@@ -32,21 +31,20 @@ pipeline {
             steps {
                 container('trivy') {
                     echo "Initializing Vulnerability Scanner..."
-                    sh 'trivy fs --cache-dir /root/.cache/trivy --exit-code 0 --severity HIGH,CRITICAL .'
+                    // Trivy uses the PVC we successfully bound
+                    sh 'trivy fs --cache-dir /home/jenkins/.cache --exit-code 0 --severity HIGH,CRITICAL .'
                 }
             }
         }
 
-        stage('Python Compile & Test') {
+        stage('Python Build') {
             steps {
                 container('python') {
-                    echo "Python runtime active. Building workspace environment..."
                     sh '''
-                        # Lower MTU for the pip install as well
                         python3 -m venv venv
                         . venv/bin/activate
-                        pip install --upgrade pip
-                        pip install -r requirements.txt
+                        pip install --upgrade pip --trusted-host pypi.org --trusted-host files.pythonhosted.org
+                        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
                     '''
                 }
             }
@@ -57,10 +55,9 @@ pipeline {
                 script {
                     container('sonar-scanner') {
                         withSonarQubeEnv('sonarqube') {
-                            echo "Forwarding static code analysis metrics to SonarQube..."
                             sh '''
                                 sonar-scanner \
-                                -Dsonar.projectKey=my-devops-project \
+                                -Dsonar.projectKey=python-sample-app \
                                 -Dsonar.sources=. \
                                 -Dsonar.host.url=http://sonarqube:9000 \
                                 -Dsonar.scm.disabled=true
